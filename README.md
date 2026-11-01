@@ -2,6 +2,8 @@
 
 **Codex 额度用完了？在 WorkBuddy 对话里选择原聊天，读取需要的上下文，接着做。**
 
+[下载安装包](https://github.com/capricornus9527/workbuddy-codex-handoff/releases/latest) · [测试状态](https://github.com/capricornus9527/workbuddy-codex-handoff/actions/workflows/test.yml)
+
 本地只读提取器 + WorkBuddy Skill，无模型反代、无 API Key、无额外服务、无第三方运行依赖。不要求 Codex 还能回答，也不用事先生成总结。
 
 ```text

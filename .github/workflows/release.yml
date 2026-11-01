@@ -1,0 +1,47 @@
+name: release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Verify version and tests
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($env:RELEASE_TAG -ne "v$version") { throw 'Tag and package version differ' }
+          node --test
+          if ($LASTEXITCODE -ne 0) { throw 'Tests failed' }
+      - name: Build release packages
+        shell: pwsh
+        run: ./scripts/build.ps1
+      - name: Verify package boundaries
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          foreach ($file in Get-ChildItem artifacts/*.zip) {
+            $zip = [IO.Compression.ZipFile]::OpenRead($file.FullName)
+            try {
+              $names = @($zip.Entries | ForEach-Object FullName)
+              if ($names | Where-Object { $_ -match '(^|/)(tmp|artifacts|\.git)/|runtime\.json|\.jsonl|\.sqlite' }) { throw 'Unexpected private/build content in package' }
+              if ($file.Name -like 'codex-handoff-skill*' -and 'SKILL.md' -notin $names) { throw 'Invalid Skill ZIP root' }
+            } finally { $zip.Dispose() }
+          }
+      - name: Publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $assets = @(Get-ChildItem artifacts -File | ForEach-Object FullName)
+          gh release create $env:RELEASE_TAG @assets --verify-tag --title "$env:RELEASE_TAG · WorkBuddy 接续 Codex" --notes-file docs/RELEASE_NOTES.md
+          if ($LASTEXITCODE -ne 0) { throw 'Release publication failed' }
