@@ -1,6 +1,6 @@
 {
   "name": "codex-handoff",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "在 WorkBuddy 对话中选择本机 Codex 聊天，按需提取上下文并结合原工作区继续工作。",
   "author": { "name": "capricornus9527" },
   "homepage": "https://github.com/capricornus9527/workbuddy-codex-handoff",

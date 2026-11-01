@@ -11,12 +11,14 @@
        ↓
 选择聊天（标题 / 时间 / 工作区，支持多条）
        ↓
-选择节选、最近记录、消息范围或工具记录
+读取所选聊天（先读当时的指令注入，再读节选）
        ↓
-WorkBuddy 核对原工作区，整理上下文，继续任务
+核对约束：原对话指令 + 工作区 AGENTS.md
+       ↓
+WorkBuddy 复核原工作区，说明接手目标，继续任务
 ```
 
-> 第一次发布：v0.1.0。插件只提供 Skill 和读取工具，不修改 WorkBuddy 聊天数据库，不声称无损恢复整个 Codex 运行状态。对话选择使用宿主提问工具或文字列表，**不是独立弹窗**。宿主是否展示交互选项取决于当前 WorkBuddy 版本。
+> 当前版本：v0.1.1。插件只提供 Skill 和读取工具，不修改 WorkBuddy 聊天数据库，不声称无损恢复整个 Codex 运行状态。对话选择使用宿主提问工具或文字列表，**不是独立弹窗**。宿主是否展示交互选项取决于当前 WorkBuddy 版本。
 
 ## 安装（Windows 推荐）
 
@@ -30,6 +32,8 @@ WorkBuddy 核对原工作区，整理上下文，继续任务
 
 若 PATH 中已经是 Node 24+，可以省略 `-NodePath`。国内版默认安装到当前用户的 `~/.workbuddy/skills/codex-handoff`。自定义配置目录（或国际版）用 `-WorkBuddyHome` 指定实际目录，不能把不同配置目录的登录态混为一谈。
 
+支持 Windows PowerShell 5.1 与 PowerShell 7；脚本使用 UTF-8 BOM。若执行策略实际阻止脚本，可在审阅源码后仅为本次进程运行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/install.ps1 -NodePath '你的 node.exe 绝对路径'`，无需更改系统或用户执行策略。
+
 安装后新建 WorkBuddy 对话，必要时重启应用。在对话中输入：
 
 > 使用 codex-handoff，列出我最近的 Codex 聊天，让我选择后接着工作。
@@ -41,6 +45,8 @@ WorkBuddy 核对原工作区，整理上下文，继续任务
 > 选择第 2 条，读取最近 30 条消息，结合原工作区继续未完成任务。
 >
 > 再读取第 1～20 条消息，以及相关工具结果，核对之前失败的原因。
+
+技能按固定顺序执行，不跳步：**先让你选定聊天 → 读出内容并向你复述 → 核对当时的指令注入和工作区 AGENTS.md → 才动手改文件**。用户只说“继续”但没指定具体聊天时，会先回到候选列表。这套顺序只在一次接手开始时执行一次；选定之后，同一对话的后续轮次就是正常协作，不会每轮重复列候选或复述。
 
 本机直接安装是**用户级 Skill**，调用名为 `codex-handoff`（宿主支持时可输入 `/codex-handoff`）。不必额外添加 MCP 或改写聊天库。
 
@@ -60,9 +66,11 @@ WorkBuddy 核对原工作区，整理上下文，继续任务
 | 项目 | 行为 |
 |---|---|
 | 聊天发现 | 实际 CODEX_HOME 下的 `state_*.sqlite`，只读；不可用时回退标题索引和会话文件 |
+| 索引路径陈旧 | 记录里的 `rollout_path` 带 Windows `\\?\` 前缀、或原文件已就地压缩为 `.jsonl.zst` 时，自动解析到实际文件；确实取不到才标记不可读并提示 `--scan` |
 | 搜索 | 标题、工作区、UUID；分页展示，不默认搜索全部聊天正文 |
 | 归档及提供方 | 默认列活动聊天，可包含归档；不按模型提供方过滤 |
 | 原始格式 | sessions、archived_sessions 中的 `.jsonl` 和 `.jsonl.zst` |
+| 原对话提示词 | `--mode prompt` 单独取当时的 AGENTS.md／项目指令注入，用于和当前工作区规则对照 |
 | 默认节选 brief | 开头两条非环境注入的用户文字 + 最后十二条文字；不是语义总结 |
 | 按需扩展 | 最近 N 条、指定消息区间、独立工具调用/结果区间，均报告截断 |
 | 可追溯 | 完整聊天 ID、原文件路径、JSONL 行号、消息编号和遗漏数量 |
@@ -77,6 +85,8 @@ WorkBuddy 核对原工作区，整理上下文，继续任务
 node ./skills/codex-handoff/scripts/handoff.mjs doctor
 node ./skills/codex-handoff/scripts/handoff.mjs list --query '示例' --limit 12
 node ./skills/codex-handoff/scripts/handoff.mjs list --archived --scan
+node ./skills/codex-handoff/scripts/handoff.mjs extract --session '完整聊天UUID' --mode prompt
+node ./skills/codex-handoff/scripts/handoff.mjs extract --session '完整聊天UUID' --mode brief
 node ./skills/codex-handoff/scripts/handoff.mjs extract --session '完整聊天UUID' --mode recent --count 30
 node ./skills/codex-handoff/scripts/handoff.mjs extract --session '完整聊天UUID' --mode range --from 1 --count 20
 node ./skills/codex-handoff/scripts/handoff.mjs extract --session '完整聊天UUID' --mode tools --from 1 --count 10
@@ -94,7 +104,20 @@ node ./skills/codex-handoff/scripts/handoff.mjs extract --session '完整聊天U
 
 卸载只将本技能移至备份，保留用户资料。要回滚，可在退出 WorkBuddy 后用备份恢复该技能目录。运行期间无后台常驻进程或计划任务。
 
-额度恢复后可让 WorkBuddy 在你指定的目录写交接说明，再由 Codex 读取。此版本不做双向数据库同步。
+额度恢复后要回 Codex，不必给 Codex 装任何东西，也不必改它的任何规则文件：WorkBuddy 写一份自解释的交接单，你粘一句话即可。
+
+### 交回 Codex（不装插件、零侵入）
+
+回到**原来那个 Codex 对话**时，不依赖宿主重新注入规则或自动发现文件；直接用下面的触发语，也不必在 `AGENTS.md` 里加约定。
+
+1. **收尾时**才写（WorkBuddy 判断本轮完成，或你明说完成）：项目根目录 `.codex-handoff/ACTIVE.md`，固定路径、覆盖写，该目录加入对应仓库 `.gitignore`。内容写成脱离上下文也能读懂的样子：项目路径、改了哪些文件、验证到哪一步、未完成与下一步、未确认的疑点。
+2. WorkBuddy 在回复末尾给你一句可直接粘贴的话，回到旧对话粘上：
+
+   > 读 `.codex-handoff/ACTIVE.md` 并按里面的下一步继续，完成后并入状态文档并删除该文件。
+
+3. 删除交给读的一侧，避免 WorkBuddy 删了而对方没执行。不修改 Codex 的配置、规则文件和会话库，也不做双向数据库同步。
+
+如果你不想粘贴这句话，也可以自己让 Codex「读 `.codex-handoff/ACTIVE.md`」，效果一样——文件本身脱离上下文可读。
 
 ## 隐私和验证
 

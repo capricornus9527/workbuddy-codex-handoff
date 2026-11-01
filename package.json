@@ -1,6 +1,6 @@
 {
   "name": "workbuddy-codex-handoff",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "在 WorkBuddy 中选择、读取本机 Codex 聊天并接续工作",

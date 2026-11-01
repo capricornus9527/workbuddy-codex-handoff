@@ -7,3 +7,4 @@ node_modules/
 *.local.json
 runtime.json
 handoff-*.md
+.codex-handoff/

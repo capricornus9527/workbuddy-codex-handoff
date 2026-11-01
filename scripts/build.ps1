@@ -1,9 +1,9 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 if (& git -C $repo status --porcelain --untracked-files=no) { throw '请先提交已跟踪文件的改动，确保两个包来自同一版本。' }
-$version = (Get-Content -LiteralPath (Join-Path $repo 'package.json') -Raw | ConvertFrom-Json).version
+$version = (Get-Content -LiteralPath (Join-Path $repo 'package.json') -Raw -Encoding UTF8 | ConvertFrom-Json).version
 $out = Join-Path $repo 'artifacts'
 New-Item -ItemType Directory -Path $out -Force | Out-Null
 $sourceZip = Join-Path $out "workbuddy-codex-handoff-$version.zip"

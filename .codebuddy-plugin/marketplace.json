@@ -5,7 +5,7 @@
     "name": "codex-handoff",
     "source": "./",
     "description": "选择 Codex 聊天 → 本地提取 → WorkBuddy 接手",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "category": "productivity"
   }]
 }

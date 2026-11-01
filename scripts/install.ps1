@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$WorkBuddyHome = (Join-Path $env:USERPROFILE '.workbuddy'),
     [string]$NodePath,
@@ -6,8 +6,9 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
+$version = (Get-Content -LiteralPath (Join-Path $repo 'package.json') -Raw -Encoding UTF8 | ConvertFrom-Json).version
 if (-not (Test-Path -LiteralPath $WorkBuddyHome -PathType Container)) { throw 'WorkBuddy 数据目录不存在，请先启动应用或用 -WorkBuddyHome 指定。' }
-$WorkBuddyHome = (Resolve-Path -LiteralPath $WorkBuddyHome).Path
+$WorkBuddyHome = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $WorkBuddyHome).Path)
 $target = [IO.Path]::GetFullPath((Join-Path $WorkBuddyHome 'skills\codex-handoff'))
 if (-not $target.StartsWith($WorkBuddyHome.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { throw '目标路径必须位于指定 WorkBuddy 目录内。' }
 foreach ($entry in @((Join-Path $WorkBuddyHome 'skills'), $target, (Join-Path $WorkBuddyHome 'codex-handoff-backups'))) {
@@ -17,7 +18,7 @@ $backup = $null
 if (-not $Uninstall) {
     if (-not $NodePath) { $NodePath = (Get-Command node -ErrorAction Stop).Source }
     $NodePath = (Resolve-Path -LiteralPath $NodePath).Path
-    $major = & $NodePath -p 'process.versions.node.split(".")[0]'
+    $major = & $NodePath -p 'process.versions.node.match(/^[0-9]+/)[0]'
     if ($LASTEXITCODE -ne 0 -or [int]$major -lt 24) { throw '需要已有的 Node.js 24+；可通过 -NodePath 指定，不会自动安装。' }
 }
 # Back up only this skill, never modify settings, login or other plugins.
@@ -36,7 +37,7 @@ try {
     Copy-Item -LiteralPath (Join-Path $source 'SKILL.md') -Destination $target
     New-Item -ItemType Directory -Path (Join-Path $target 'scripts') | Out-Null
     Copy-Item -LiteralPath (Join-Path $source 'scripts\handoff.mjs') -Destination (Join-Path $target 'scripts')
-    $runtime = @{ node = $NodePath; version = '0.1.0' } | ConvertTo-Json
+    $runtime = @{ node = $NodePath; version = $version } | ConvertTo-Json
     [IO.File]::WriteAllText((Join-Path $target 'runtime.json'), $runtime, [Text.UTF8Encoding]::new($false))
     foreach ($name in @('SKILL.md', 'scripts\handoff.mjs')) {
         if ((Get-FileHash -LiteralPath (Join-Path $source $name)).Hash -ne (Get-FileHash -LiteralPath (Join-Path $target $name)).Hash) { throw "复制校验失败：$name" }

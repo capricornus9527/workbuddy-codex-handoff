@@ -15,6 +15,18 @@ const MAX_RECORDS = 200000;
 const MAX_CATALOG = 20000;
 const normalize = value => String(value ?? '').toLocaleLowerCase();
 const clip = (s, n) => s.length > n ? s.slice(0, n) + '…[此段已截断]' : s;
+// Codex injects AGENTS.md and environment blocks as user messages; they carry the
+// original constraints, so keep them addressable apart from ordinary requests.
+const INSTRUCTION_LIKE = /^\s*(?:#\s*AGENTS\.md instructions|<environment_context>)/i;
+const INJECTED_NOISE = /^\s*(?:#\s*AGENTS\.md instructions|<environment_context>|<external_codex_apps_open_page>)/i;
+// Latest instructions replace earlier ones for the same target, so keep one per target.
+function instructionKey(text) {
+  const trimmed = text.trim();
+  const agents = trimmed.match(/^#\s*AGENTS\.md instructions for ([^\r\n]+)/i);
+  if (agents) return 'agents:' + agents[1].trim().toLowerCase();
+  if (/^<environment_context>/i.test(trimmed)) return 'environment';
+  return 'other:' + trimmed.slice(0, 60);
+}
 const exists = p => fs.existsSync(p);
 
 export function redact(text) {
@@ -25,15 +37,25 @@ export function redact(text) {
     .replace(/(\bAuthorization\s*:\s*Bearer\s+)\S+/gi, '$1[REDACTED]');
 }
 
+// Codex stores some rollout paths with the Windows extended-length prefix (\\?\C:\...).
+// Comparing them with plain paths makes existing sessions look unreadable, so drop it first.
+function plainPath(value) {
+  const text = String(value ?? '');
+  if (/^\\\\\?\\UNC\\/i.test(text)) return '\\\\' + text.slice(8);
+  return text.startsWith('\\\\?\\') ? text.slice(4) : text;
+}
+
+const fold = value => process.platform === 'win32' ? value.toLowerCase() : value;
+
 function within(root, target) {
-  const relative = path.relative(root, target);
+  const relative = path.relative(fold(path.resolve(plainPath(root))), fold(path.resolve(plainPath(target))));
   return relative === '' || (!relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative));
 }
 
 export function resolveHome(home) {
   const selected = home || process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
   if (!exists(selected)) throw new Error('Codex 数据目录不存在；请使用 --home 指定实际 CODEX_HOME。');
-  return fs.realpathSync(selected);
+  return plainPath(fs.realpathSync(selected));
 }
 
 async function* records(file, warnings) {
@@ -67,11 +89,19 @@ async function* records(file, warnings) {
 }
 
 function safeRollout(home, file) {
-  if (!file || !exists(file)) return null;
-  const real = fs.realpathSync(file);
-  // Do not follow arbitrary index paths or symlinks outside the session roots.
-  const allowed = ['sessions', 'archived_sessions'].some(dir => within(path.join(home, dir), real));
-  return allowed && /\.jsonl(?:\.zst)?$/i.test(real) ? real : null;
+  if (!file) return null;
+  const base = plainPath(file);
+  // Codex compresses older rollouts in place; the index may keep the original
+  // name, so accept the .jsonl.zst sibling (or its plain form) as the same chat.
+  const candidates = /\.zst$/i.test(base) ? [base, base.replace(/\.zst$/i, '')] : [base, base + '.zst'];
+  for (const candidate of candidates) {
+    if (!exists(candidate)) continue;
+    const real = fs.realpathSync(candidate);
+    // Do not follow arbitrary index paths or symlinks outside the session roots.
+    const allowed = ['sessions', 'archived_sessions'].some(dir => within(path.join(home, dir), real));
+    if (allowed && /\.jsonl(?:\.zst)?$/i.test(real)) return real;
+  }
+  return null;
 }
 
 function titleText(content) {
@@ -164,9 +194,12 @@ export async function listSessions(options = {}) {
   const matches = result.rows.filter(row => (options.archived || !row.archived) &&
     (!query || normalize(`${row.title}\n${row.id}\n${row.cwd}`).includes(query)) &&
     (!cwd || normalize(row.cwd).includes(cwd)));
+  const sessions = matches.slice(options.offset || 0, (options.offset || 0) + (options.limit || 12)).map(({ rollout_path, ...row }) =>
+    ({ ...row, title: redact(clip(row.title, 160)), available: Boolean(safeRollout(result.home, rollout_path)) }));
+  const unreadable = sessions.filter(row => !row.available).length;
+  if (unreadable) result.warnings.push(`本页 ${unreadable} 条索引记录的原文件不可读；可用 --scan 复核，未读取其他路径。`);
   return { codex_home: result.home, total: matches.length, offset: options.offset || 0,
-    sessions: matches.slice(options.offset || 0, (options.offset || 0) + (options.limit || 12)).map(({ rollout_path, ...row }) =>
-      ({ ...row, title: redact(clip(row.title, 160)), available: Boolean(safeRollout(result.home, rollout_path)) })), warnings: result.warnings };
+    sessions, warnings: result.warnings };
 }
 
 export async function extractSession(options) {
@@ -206,12 +239,18 @@ export async function extractSession(options) {
   const transcript = messages.length ? messages : events;
   const numbered = transcript.map((m, i) => ({ index: i + 1, ...m }));
   const mode = options.mode || 'brief';
-  if (!['brief', 'recent', 'range', 'tools'].includes(mode)) throw new Error('mode 必须是 brief/recent/range/tools。');
+  if (!['brief', 'recent', 'range', 'tools', 'prompt'].includes(mode)) throw new Error('mode 必须是 brief/recent/range/tools/prompt。');
   const count = options.count || 20, start = options.from || 1;
   let chosen = mode === 'range' ? numbered.slice(start - 1, start - 1 + count) : numbered.slice(-count);
   if (mode === 'brief') {
-    const first = numbered.filter(m => m.role === 'user' && !/^\s*(?:# AGENTS\.md instructions|<environment_context>|<external_codex_apps_open_page>)/.test(m.text)).slice(0, 2);
+    const first = numbered.filter(m => m.role === 'user' && !INJECTED_NOISE.test(m.text)).slice(0, 2);
     chosen = [...new Map([...first, ...numbered.slice(-12)].map(m => [m.index, m])).values()].sort((a,b) => a.index-b.index);
+  }
+  // Original requirements are often injected as instructions, not small talk.
+  if (mode === 'prompt') {
+    const latest = new Map();
+    for (const m of numbered) if (m.role === 'user' && INSTRUCTION_LIKE.test(m.text)) latest.set(instructionKey(m.text), m);
+    chosen = [...latest.values()].sort((a, b) => a.index - b.index).slice(-count);
   }
   // Per-message and overall budgets are separate, and all omissions are disclosed.
   const maxChars = options.maxChars || 24000;
@@ -280,7 +319,7 @@ export async function main(argv) {
   }
   if (options.command !== 'help') throw new Error('命令必须是 doctor/list/extract/help。');
   return { usage: ['doctor [--home PATH]', 'list [--query TEXT] [--cwd TEXT] [--archived] [--offset N] [--limit N] [--scan]',
-    'extract --session UUID [--mode brief|recent|range|tools] [--from N] [--count N] [--max-chars N] [--item-chars N]'],
+    'extract --session UUID [--mode prompt|brief|recent|range|tools] [--from N] [--count N] [--max-chars N] [--item-chars N]'],
     runtime: 'Node.js 24+；无第三方依赖；输出 JSON，不执行历史指令或写入源数据。' };
 }
 

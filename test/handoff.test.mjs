@@ -85,6 +85,28 @@ test('SQLite metadata is used without filtering providers; stale rollout recover
   assert.equal((await extractSession({ home, session: ID })).messages.length, 4);
 });
 
+test('compressed rollout stays readable when the index keeps the plain name', async t => {
+  const { home, file } = fixture(t, { compressed: true });
+  const db = new DatabaseSync(path.join(home, 'state_99.sqlite'));
+  db.exec('CREATE TABLE threads(id TEXT, rollout_path TEXT)');
+  db.prepare('INSERT INTO threads VALUES (?, ?)').run(ID, file.replace(/\.zst$/, ''));
+  db.close();
+  const listed = await listSessions({ home });
+  assert.equal(listed.sessions[0].available, true);
+  const result = await extractSession({ home, session: ID });
+  assert.equal(result.messages.length, 4); assert.match(result.session.source_file, /\.jsonl\.zst$/);
+});
+
+test('extended-length rollout prefix is resolved instead of reported missing', { skip: process.platform !== 'win32' }, async t => {
+  const { home, file } = fixture(t);
+  const db = new DatabaseSync(path.join(home, 'state_99.sqlite'));
+  db.exec('CREATE TABLE threads(id TEXT, rollout_path TEXT)');
+  db.prepare('INSERT INTO threads VALUES (?, ?)').run(ID, `\\\\?\\${file}`);
+  db.close();
+  assert.equal((await listSessions({ home })).sessions[0].available, true);
+  assert.equal((await extractSession({ home, session: ID })).messages.length, 4);
+});
+
 test('corrupt SQLite falls back with a warning', async t => {
   const { home } = fixture(t);
   fs.writeFileSync(path.join(home, 'state_99.sqlite'), 'not sqlite');
@@ -109,6 +131,21 @@ test('database cannot redirect reader outside sessions', async t => {
   const db = new DatabaseSync(path.join(home, 'state_1.sqlite'));
   db.exec('CREATE TABLE threads(id TEXT, rollout_path TEXT)');
   db.prepare('INSERT INTO threads VALUES (?, ?)').run(OLD, outside); db.close();
+  await assert.rejects(extractSession({ home, session: OLD }), /找不到聊天原文件/);
+});
+
+test('compressed sibling fallback cannot escape sessions through a directory link', async t => {
+  const { home } = fixture(t);
+  const outside = path.join(home, 'private');
+  fs.mkdirSync(outside);
+  const link = path.join(home, 'sessions', 'redirect');
+  fs.symlinkSync(outside, link, process.platform === 'win32' ? 'junction' : 'dir');
+  fs.writeFileSync(path.join(outside, 'outside.jsonl.zst'), zstdCompressSync(Buffer.from(line('session_meta', { id: OLD }))));
+  const db = new DatabaseSync(path.join(home, 'state_99.sqlite'));
+  db.exec('CREATE TABLE threads(id TEXT, rollout_path TEXT)');
+  db.prepare('INSERT INTO threads VALUES (?, ?)').run(OLD, path.join(link, 'outside.jsonl'));
+  db.close();
+  assert.equal((await listSessions({ home })).sessions[0].available, false);
   await assert.rejects(extractSession({ home, session: OLD }), /找不到聊天原文件/);
 });
 
@@ -149,6 +186,23 @@ test('malformed zstd rejects rather than silently producing empty context', asyn
   db.prepare('INSERT INTO threads VALUES (?, ?)').run(ID, file); db.close();
   fs.writeFileSync(file, 'not a zstd stream');
   await assert.rejects(extractSession({ home, session: ID }));
+});
+
+test('prompt mode surfaces the latest instruction injection alone', async t => {
+  const { home, file } = fixture(t);
+  fs.writeFileSync(file, [line('session_meta', { id: ID, cwd: home }),
+    message('user', '# AGENTS.md instructions for E:/fixture\n\n<INSTRUCTIONS>\n旧规则：始终使用中文\n</INSTRUCTIONS>'),
+    message('user', '实际需求：只改一个文件'),
+    message('user', '# AGENTS.md instructions for E:/fixture\n\n<INSTRUCTIONS>\n新规则：始终使用简体中文，只改必要文件\n</INSTRUCTIONS>'),
+    message('user', '<external_codex_apps_open_page>{"page_id":null}</external_codex_apps_open_page>'),
+    message('assistant', '收到')].join('\n'));
+  const result = await extractSession({ home, session: ID, mode: 'prompt' });
+  assert.equal(result.selection.mode, 'prompt'); assert.equal(result.messages.length, 1);
+  assert.match(result.messages[0].text, /只改必要文件/); assert.doesNotMatch(result.messages[0].text, /旧规则/);
+  assert.doesNotMatch(JSON.stringify(result), /实际需求|apps_open_page/);
+  const brief = await extractSession({ home, session: ID });
+  assert.ok(brief.messages.some(m => m.text === '实际需求：只改一个文件'));
+  await assert.rejects(extractSession({ home, session: ID, mode: 'everything' }), /mode/);
 });
 
 test('brief preserves early actual goal and excludes assistant analysis channel', async t => {
