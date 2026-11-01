@@ -1,0 +1,9 @@
+artifacts/
+tmp/
+node_modules/
+*.log
+*.sqlite*
+*.jsonl*
+*.local.json
+runtime.json
+handoff-*.md

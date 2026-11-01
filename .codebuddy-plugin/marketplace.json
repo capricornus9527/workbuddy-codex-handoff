@@ -1,0 +1,11 @@
+{
+  "name": "codex-handoff-marketplace",
+  "owner": { "name": "capricornus9527" },
+  "plugins": [{
+    "name": "codex-handoff",
+    "source": "./",
+    "description": "选择 Codex 聊天 → 本地提取 → WorkBuddy 接手",
+    "version": "0.1.0",
+    "category": "productivity"
+  }]
+}
